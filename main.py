@@ -135,7 +135,7 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-<<<<<<< HEAD
+
 async def _handle_solve(request: SolveRequest) -> JSONResponse:
     print(
         {
@@ -192,7 +192,7 @@ async def solve_root(request: SolveRequest) -> JSONResponse:
 @app.post("/solve")
 async def solve(request: SolveRequest) -> JSONResponse:
     return await _handle_solve(request)
-=======
+
 @app.post("/")
 async def solve_root(request: Request) -> JSONResponse:
     return await _handle_solve_request(request)
@@ -201,6 +201,6 @@ async def solve_root(request: Request) -> JSONResponse:
 @app.post("/solve")
 async def solve(request: Request) -> JSONResponse:
     return await _handle_solve_request(request)
->>>>>>> 93e6fbc (Improve Cloud Run request observability and classify ledger analysis prompts)
+
 
 
