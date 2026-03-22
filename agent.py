@@ -38,6 +38,12 @@ class TripletexAgent:
         normalized = " ".join(prompt.strip().split())
 
         replacements = [
+            (r"\banalysez\b", "analyze"),
+            (r"\banalyser\b", "analyze"),
+            (r"\banalyze\b", "analyze"),
+            (r"\bidentifiez\b", "identify"),
+            (r"\bidentifier\b", "identify"),
+            (r"\bcréez\b", "create"),
             (r"\bmettre a jour\b", "update"),
             (r"\bmettre à jour\b", "update"),
             (r"\bissue\b", "create"),
@@ -164,10 +170,47 @@ class TripletexAgent:
             (r"\binforme de gastos\b", "travel expense"),
             (r"\bnote de frais\b", "travel expense"),
             (r"\breisekostenabrechnung\b", "travel expense"),
+            (r"\bactivité\b", "activity"),
+            (r"\bactivite\b", "activity"),
+            (r"\baktivitet\b", "activity"),
+            (r"\baktivitaet\b", "activity"),
+            (r"\bgrand livre\b", "general ledger"),
+            (r"\bhovedbok\b", "general ledger"),
+            (r"\bgroßbuch\b", "general ledger"),
+            (r"\bgrossbuch\b", "general ledger"),
+            (r"\bcompte de charge\b", "expense account"),
+            (r"\bcomptes de charges\b", "expense accounts"),
+            (r"\bcompte de charges\b", "expense account"),
+            (r"\bexpense accounts\b", "expense account"),
+            (r"\bcomptes\b", "accounts"),
+            (r"\bcompte\b", "account"),
+            (r"\bcharges\b", "expense"),
+            (r"\bcoûts\b", "costs"),
+            (r"\bcouts\b", "costs"),
+            (r"\baugmenté\b", "increased"),
+            (r"\baugmente\b", "increase"),
+            (r"\baugmentation\b", "increase"),
+            (r"\bjanvier\b", "january"),
+            (r"\bfévrier\b", "february"),
+            (r"\bfevrier\b", "february"),
+            (r"\bavril\b", "april"),
+            (r"\bmai\b", "may"),
+            (r"\bjuin\b", "june"),
+            (r"\bjuillet\b", "july"),
+            (r"\baoût\b", "august"),
+            (r"\baout\b", "august"),
+            (r"\bseptembre\b", "september"),
+            (r"\boctobre\b", "october"),
+            (r"\bnovembre\b", "november"),
+            (r"\bdécembre\b", "december"),
+            (r"\bdecembre\b", "december"),
+            (r"\binterne\b", "internal"),
+            (r"\btrois\b", "3"),
             (r"\badministrator de konto\b", "account administrator"),
             (r"\badministrador de cuenta\b", "account administrator"),
             (r"\badministrador da conta\b", "account administrator"),
             (r"\badministrateur du compte\b", "account administrator"),
+            (r"\badministrateur du account\b", "account administrator"),
             (r"\bkontoadministrator\b", "account administrator"),
         ]
 
@@ -432,12 +475,13 @@ class TripletexAgent:
             "payment_unsupported",
             "credit_note_unsupported",
             "voucher_unsupported",
+            "ledger_analysis_unsupported",
         }:
             plan.steps.append(
                 PlanStep(
                     name=f"unsupported_{task_type}",
                     action=task_type,
-                    params={"prompt": prompt},
+                    params=extracted,
                 )
             )
 
@@ -568,6 +612,16 @@ class TripletexAgent:
                 result = self._unsupported_response(
                     "Voucher workflows are not implemented yet",
                     task_type=plan.task_type,
+                )
+
+            elif step.action == "ledger_analysis_unsupported":
+                result = self._unsupported_response(
+                    (
+                        "Ledger-analysis workflows with follow-up project/activity creation "
+                        "are not implemented yet"
+                    ),
+                    task_type=plan.task_type,
+                    extra_debug={"parsed_fields": step.params},
                 )
 
             else:
@@ -752,14 +806,18 @@ class TripletexAgent:
         self,
         message: str,
         task_type: str | None = None,
+        extra_debug: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
+        debug = {
+            "implemented": False,
+            "unsupported": True,
+            "unsupported_task_type": task_type,
+        }
+        if extra_debug:
+            debug.update(extra_debug)
         return {
             "message": message,
-            "debug": {
-                "implemented": False,
-                "unsupported": True,
-                "unsupported_task_type": task_type,
-            },
+            "debug": debug,
         }
 
     def _has_account_administrator_entitlement(
@@ -843,7 +901,55 @@ class TripletexAgent:
         if task_type == "invoice_create":
             return self._extract_invoice_fields(prompt)
 
+        if task_type == "ledger_analysis_unsupported":
+            return self._extract_ledger_analysis_fields(prompt)
+
         return {"prompt": prompt}
+
+    def _extract_ledger_analysis_fields(self, prompt: str) -> Dict[str, Any]:
+        normalized = " ".join(prompt.strip().split())
+        month_names = (
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        )
+        month_pattern = "|".join(month_names)
+
+        months = re.findall(rf"\b({month_pattern})\b", normalized, flags=re.IGNORECASE)
+        years = re.findall(r"\b(20\d{2})\b", normalized)
+        top_n_match = re.search(
+            r"\b(\d+)\s+(?:expense\s+)?accounts?\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if not top_n_match:
+            top_n_match = re.search(
+                r"\bidentify\s+(?:the\s+)?(\d+)\b",
+                normalized,
+                flags=re.IGNORECASE,
+            )
+
+        return {
+            "prompt": normalized,
+            "period_months": [month.lower() for month in months[:2]],
+            "period_year": years[0] if years else None,
+            "top_n": int(top_n_match.group(1)) if top_n_match else None,
+            "requested_actions": {
+                "analyze_general_ledger": "general ledger" in normalized.lower(),
+                "identify_expense_accounts": "expense account" in normalized.lower(),
+                "create_projects": "project" in normalized.lower() and "create" in normalized.lower(),
+                "create_activities": "activity" in normalized.lower() and "create" in normalized.lower(),
+            },
+        }
 
     def _resolve_customer_id(self, customer_name: str) -> int:
         matches = self.client.search_customers(customer_name, count=10)
@@ -2509,10 +2615,22 @@ class TripletexAgent:
         payment_words = ["payment"]
         credit_note_words = ["credit note"]
         voucher_words = ["voucher"]
+        ledger_words = ["general ledger", "ledger"]
+        analysis_words = ["analyze", "identify", "increase", "increased", "costs", "expense account"]
+        activity_words = ["activity"]
         create_words = ["create", "register", "opprett", "registrer"]
         update_words = ["update", "set", "oppdater", "sett"]
         delete_words = ["delete", "remove", "slett", "fjern"]
 
+        if (
+            self._contains_any_term(p, ledger_words)
+            and self._contains_any_term(p, analysis_words)
+            and (
+                self._contains_any_term(p, activity_words)
+                or self._contains_any_term(p, project_words)
+            )
+        ):
+            return "ledger_analysis_unsupported"
         if self._contains_any_term(p, payment_words) and self._contains_any_term(
             p, create_words + delete_words + update_words
         ):

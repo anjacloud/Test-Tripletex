@@ -16,7 +16,9 @@ Primary code paths:
 ## Current State
 
 ### Exposed endpoints
+- `GET /`
 - `GET /health`
+- `POST /`
 - `POST /solve`
 
 ### Current `/solve` contract
@@ -50,10 +52,12 @@ Current response shape from `main.py`:
 ```
 
 Development debug now also includes:
+- `request_summary` with sanitized incoming HTTP/body shape details for `POST /` and `POST /solve` such as path, top-level keys, prompt preview/length, file metadata, base URL, and session-token length
 - the original `prompt`
 - `normalized_prompt` after the parser's language-normalization step
 - `task_type`
 - `plan_steps` with the chosen internal actions and extracted params
+- `parsed_fields` for explicitly unsupported ledger-analysis prompts, including detected period, `top_n`, and requested follow-up actions such as project/activity creation
 - unsupported metadata such as `unsupported=true`, `implemented=false`, and `unsupported_task_type` when relevant
 
 Competition minimum remains:
@@ -69,8 +73,11 @@ Important:
 - `files[].mime_type` is now accepted by `schemas.py` and preserved in attachment metadata, and attachments now have limited execution impact via narrow fallback paths.
 - The direct team sandbox base URL is `https://kkpqfuj-amager.tripletex.dev/v2`.
 - Earlier development also used a separate proxy-style base URL, `https://api-tripletex.smaart.io/v2`; these should not be treated as interchangeable.
+- Current Cloud Run deployment is live at `https://tripletex-agent-898748745588.europe-north1.run.app`.
 
 ## Current Capabilities
+- Root-route compatibility is implemented for both `GET /` and `POST /` in addition to `/health` and `/solve`.
+- `POST /` and `POST /solve` now share the same request handler and return sanitized request-shape debug metadata, which helps distinguish schema mismatch, parser classification, and unsupported-task cases in Cloud Run logs and responses.
 - Customer creation is implemented.
 - Customer creation can now derive missing `name` and `email` from the first text-like attachment when the prompt refers to an attached file instead of inline fields.
 - Customer email update is implemented in a first version.
@@ -99,6 +106,7 @@ Important:
 - Basic result verification exists for implemented create flows by reading back created resources.
 
 ## Known Gaps
+- General-ledger analysis tasks and project-activity follow-up workflows are not implemented; they are now classified explicitly as `ledger_analysis_unsupported` instead of falling through as `unknown`.
 - Prompt parsing is still mostly keyword and regex based, but now includes a first-pass normalization layer for common command phrases, entity names, and a few role/task phrases in Norwegian, English, Nynorsk, Spanish, Portuguese, German, and French.
 - Employee name extraction now supports accented Latin characters in simple two-part names.
 - Employee admin handling currently relies on the `ALL_PRIVILEGES` entitlement template instead of a narrower, task-specific entitlement set.
@@ -139,6 +147,8 @@ Important:
 - The project is currently a prototype, not a full competition-ready agent.
 - FastAPI dependencies must be installed before local startup.
 - Docker uses `uvicorn main:app --host 0.0.0.0 --port 8080`.
+- Competition/platform checks have been observed to hit both `GET /` and `POST /` in addition to `/health` and `/solve`, so root-path compatibility matters in deployed revisions.
+- Invalid `POST /` or `POST /solve` payloads now return `400` with validation errors plus sanitized `request_summary`, instead of only failing deeper in the solve flow.
 - Local baseline checks currently cover `/health`, `SolveFile` schema parsing, and attachment metadata preservation.
 - The current code returns extra `message` and `debug` fields; this is acceptable for development, but the competition contract should remain compatible with `{"status":"completed"}`.
 - The Tripletex client now treats successful empty HTTP bodies as valid success responses, which is important for template-style write endpoints.
@@ -165,6 +175,8 @@ Important:
 - Failed `solve()` responses now preserve `task_type` and `plan_steps` when planning succeeded, which makes execution failures easier to debug.
 - Order delete currently uses a narrow `find customer -> list orders -> inspect order lines -> DELETE /order/{id}` flow to avoid ambiguous deletions.
 - Keep sandbox credentials and proxy credentials separate during debugging; always trust the `tripletex_credentials.base_url` passed into the request over any remembered environment-specific URL.
+- Current competition debugging should focus first on logging incoming prompts and the resulting `task_type`/failure path for `POST /`, because infrastructure checks are now passing in Cloud Run while task scoring is still failing.
+- Cloud Run logs have now confirmed at least one remaining low-score prompt is a French general-ledger analysis task that also asks for project and activity creation, so missing accounting-analysis capability is a concrete current blocker rather than a generic parser mystery.
 
 ## Decision Log
 - `AGENT.md` is a living runbook, not a full architecture spec.
@@ -172,6 +184,10 @@ Important:
 - Important implementation decisions may be recorded here before code lands, but they must be labeled clearly as planned.
 - `process.md` is the active implementation plan baseline and should stay aligned with this file.
 - Baseline cleanup removed hardcoded debug credentials and the non-essential debug endpoint from `main.py`.
+- Cloud Run deployment debugging showed that platform traffic uses both `GET /` and `POST /`, not only `/health` and `/solve`, so deployed revisions need root-route compatibility.
+- Cloud Run deployment at `https://tripletex-agent-898748745588.europe-north1.run.app` now passes infrastructure-level route checks; remaining failures appear to be task-level handling or parsing issues rather than deployment reachability.
+- Added a shared root/solve request handler with sanitized request-shape logging so competition runs can be debugged by comparing incoming `POST /` payload shape against the resulting `task_type` and unsupported/failure path.
+- Added explicit `ledger_analysis_unsupported` classification plus structured debug extraction for multi-step general-ledger analysis prompts that request top-N expense-account identification and follow-up project/activity creation.
 - `SolveRequest.files[]` now includes optional `mime_type`, and saved attachment metadata keeps that value for later attachment-driven workflows.
 - Added basic local regression tests for `/health`, schema parsing, and attachment metadata handling.
 - Employee creation now uses Tripletex `userType` plus the entitlement template endpoint for account-administrator requests.
