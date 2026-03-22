@@ -6,6 +6,9 @@ from schemas import SolveRequest, SolveResult
 
 app = FastAPI()
 
+@app.get("/")
+def root() -> dict[str, str]:
+    return {"status": "ok"}
 
 @app.get("/health")
 def health() -> dict[str, str]:
