@@ -6,17 +6,18 @@ from schemas import SolveRequest, SolveResult
 
 app = FastAPI()
 
+
 @app.get("/")
 def root() -> dict[str, str]:
     return {"status": "ok"}
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/solve")
-async def solve(request: SolveRequest) -> JSONResponse:
+async def _handle_solve(request: SolveRequest) -> JSONResponse:
     try:
         agent = TripletexAgent(
             base_url=request.tripletex_credentials.base_url,
@@ -41,3 +42,14 @@ async def solve(request: SolveRequest) -> JSONResponse:
                 message=str(exc),
             ).model_dump(exclude_none=True),
         )
+
+
+@app.post("/")
+async def solve_root(request: SolveRequest) -> JSONResponse:
+    return await _handle_solve(request)
+
+
+@app.post("/solve")
+async def solve(request: SolveRequest) -> JSONResponse:
+    return await _handle_solve(request)
+
