@@ -2,18 +2,112 @@ import base64
 import asyncio
 import unittest
 import requests
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from agent import TripletexAgent
-from main import health
+
+from main import _handle_solve_request, health, root
 from schemas import SolveFile, SolveRequest
 from tripletex_client import TripletexClient
 
 
+class FakeRequest:
+    def __init__(
+        self,
+        path: str,
+        payload: dict | None,
+        *,
+        method: str = "POST",
+        headers: dict[str, str] | None = None,
+        raw_body: bytes | None = None,
+        json_error: Exception | None = None,
+    ) -> None:
+        self.method = method
+        self.url = SimpleNamespace(path=path)
+        self.headers = headers or {"content-type": "application/json"}
+        self._payload = payload
+        self._raw_body = raw_body if raw_body is not None else b"{}"
+        self._json_error = json_error
+
+    async def body(self) -> bytes:
+        return self._raw_body
+
+    async def json(self) -> dict:
+        if self._json_error is not None:
+            raise self._json_error
+        return self._payload or {}
+
+
 class AppTests(unittest.TestCase):
+    def test_root_function(self) -> None:
+        self.assertEqual(root(), {"status": "ok"})
+
     def test_health_function(self) -> None:
         self.assertEqual(health(), {"status": "ok"})
+
+    def test_post_root_returns_request_summary_and_task_classification(self) -> None:
+        body = asyncio.run(
+            _handle_solve_request(
+                FakeRequest(
+                    "/",
+                    {
+                        "prompt": "Registrar pago para factura Acme AS",
+                        "files": [],
+                        "tripletex_credentials": {
+                            "base_url": "https://example.test/v2",
+                            "session_token": "dummy-token",
+                        },
+                    },
+                    raw_body=b'{"prompt":"Registrar pago para factura Acme AS"}',
+                )
+            )
+        ).body.decode("utf-8")
+        import json
+
+        body = json.loads(body)
+
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["debug"]["task_type"], "payment_unsupported")
+        self.assertEqual(body["debug"]["request_summary"]["path"], "/")
+        self.assertEqual(body["debug"]["request_summary"]["top_level_keys"], [
+            "files",
+            "prompt",
+            "tripletex_credentials",
+        ])
+        self.assertEqual(body["debug"]["request_summary"]["session_token_length"], 11)
+        self.assertEqual(
+            body["debug"]["request_summary"]["tripletex_base_url"],
+            "https://example.test/v2",
+        )
+
+    def test_post_root_returns_validation_debug_for_invalid_payload(self) -> None:
+        response = asyncio.run(
+            _handle_solve_request(
+                FakeRequest(
+                    "/",
+                    {
+                        "input": "Create customer Acme AS",
+                        "tripletex_credentials": {
+                            "base_url": "https://example.test/v2",
+                        },
+                    },
+                    raw_body=b'{"input":"Create customer Acme AS"}',
+                )
+            )
+        )
+        import json
+
+        self.assertEqual(response.status_code, 400)
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(body["status"], "error")
+        self.assertEqual(body["message"], "Invalid request payload")
+        self.assertEqual(
+            body["debug"]["request_summary"]["unexpected_top_level_keys"], ["input"]
+        )
+        self.assertFalse(body["debug"]["request_summary"]["has_prompt"])
+        self.assertGreaterEqual(len(body["debug"]["validation_errors"]), 1)
 
     def test_solve_file_accepts_mime_type(self) -> None:
         solve_file = SolveFile(
@@ -243,6 +337,42 @@ class AppTests(unittest.TestCase):
         self.assertFalse(result["debug"]["implemented"])
         self.assertEqual(result["debug"]["unsupported_task_type"], "payment_unsupported")
         self.assertEqual(result["debug"]["plan_steps"][0]["action"], "payment_unsupported")
+
+    def test_solve_includes_structured_debug_for_ledger_analysis_prompt(self) -> None:
+        agent = TripletexAgent(
+            base_url="https://example.test/v2",
+            session_token="dummy-token",
+        )
+
+        request = SolveRequest.model_validate(
+            {
+                "prompt": (
+                    "Les coûts totaux ont augmenté de manière significative de janvier à février 2026. "
+                    "Analysez le grand livre et identifiez les trois comptes de charges avec la plus "
+                    "forte augmentation. Créez un projet interne pour chacun des trois comptes avec "
+                    "le nom du compte. Créez également une activité pour chaque projet."
+                ),
+                "files": [],
+                "tripletex_credentials": {
+                    "base_url": "https://example.test/v2",
+                    "session_token": "dummy-token",
+                },
+            }
+        )
+
+        result = asyncio.run(agent.solve(request))
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["debug"]["task_type"], "ledger_analysis_unsupported")
+        self.assertEqual(
+            result["debug"]["unsupported_task_type"],
+            "ledger_analysis_unsupported",
+        )
+        self.assertEqual(result["debug"]["parsed_fields"]["period_year"], "2026")
+        self.assertEqual(
+            result["debug"]["parsed_fields"]["period_months"],
+            ["january", "february"],
+        )
 
     def test_solve_failure_preserves_task_type_and_plan_steps(self) -> None:
         agent = TripletexAgent(
@@ -757,6 +887,30 @@ class AppTests(unittest.TestCase):
 
         self.assertEqual(plan.task_type, "credit_note_unsupported")
         self.assertEqual(plan.steps[0].action, "credit_note_unsupported")
+
+    def test_build_plan_classifies_french_ledger_analysis_prompt_as_explicit_unsupported(self) -> None:
+        agent = TripletexAgent(
+            base_url="https://example.test/v2",
+            session_token="dummy-token",
+        )
+
+        plan = agent._build_plan(
+            (
+                "Les coûts totaux ont augmenté de manière significative de janvier à février 2026. "
+                "Analysez le grand livre et identifiez les trois comptes de charges avec la plus "
+                "forte augmentation. Créez un projet interne pour chacun des trois comptes avec "
+                "le nom du compte. Créez également une activité pour chaque projet."
+            )
+        )
+
+        self.assertEqual(plan.task_type, "ledger_analysis_unsupported")
+        self.assertEqual(plan.steps[0].action, "ledger_analysis_unsupported")
+        self.assertEqual(plan.extracted["period_months"], ["january", "february"])
+        self.assertEqual(plan.extracted["period_year"], "2026")
+        self.assertEqual(plan.extracted["top_n"], 3)
+        self.assertTrue(plan.extracted["requested_actions"]["analyze_general_ledger"])
+        self.assertTrue(plan.extracted["requested_actions"]["create_projects"])
+        self.assertTrue(plan.extracted["requested_actions"]["create_activities"])
 
     def test_build_plan_classifies_spanish_credit_note_synonyms_as_unsupported_credit_note_task(self) -> None:
         agent = TripletexAgent(
@@ -1579,3 +1733,4 @@ class AppTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
